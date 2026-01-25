@@ -2,7 +2,7 @@ from bot import WhatsAppBot
 import os
 
 def main():
-    GROUP_NAME = input("WhatsApp Group Name: ")
+    gp = input("WhatsApp Group Name: ")
     
     current_dir = os.path.dirname(os.path.abspath(__file__))
     download_folder = os.path.join(current_dir, "downloads")
@@ -13,7 +13,7 @@ def main():
     print(f"PDFs will be downloaded to: {download_folder}")
     
     bot = WhatsAppBot(download_folder)
-    bot.run(GROUP_NAME)
+    bot.run(gp)
 
 if __name__ == "__main__":
     main()
