@@ -14,6 +14,9 @@ class WhatsAppBot:
         self.download_path = os.path.abspath(download_path)
         
         self.options = Options()
+        self.user_data_dir = os.path.join(os.getcwd(), "chrome_profile")
+        self.options.add_argument(f"user-data-dir={self.user_data_dir}")
+        
         self.options.add_experimental_option("prefs", {
             "download.default_directory": self.download_path,
             "download.prompt_for_download": False,
@@ -31,11 +34,10 @@ class WhatsAppBot:
         self.driver.get("https://web.whatsapp.com")
         
         try:
-            self.wait.until(EC.presence_of_element_located((By.XPATH, '//div[@contenteditable="true"][@data-tab="3"]')))
-            print("Login successful!")
+            self.wait.until(EC.presence_of_element_located((By.ID, "side")))
+            print("Login successful (or session restored)!")
         except Exception as e:
-            print("Login timed out or failed. Please try again.")
-            raise e
+            print("Login timed out. Please scan the QR code if needed.")
 
     def open_group(self, group_name):
         print(f"Searching for group: {group_name}")
@@ -47,8 +49,10 @@ class WhatsAppBot:
             time.sleep(30)
             print(f"Opened group: {group_name}")
         except Exception as e:
-            print(f"Failed to open group: {group_name}")
+            print(f"Failed to open group: {group_name}. It might not exist or took too long.")
             print(e)
+
+
 
     def download_unread_pdfs(self, check_limit=10):
         
