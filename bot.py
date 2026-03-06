@@ -1,5 +1,7 @@
 import os
+import sys
 import time
+import threading
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -10,12 +12,23 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 class WhatsAppBot:
-    def __init__(self, download_path):
+    def __init__(self, download_path, log_callback=None):
         self.download_path = os.path.abspath(download_path)
+        self.log_callback = log_callback if log_callback else print
+        self.running = False
+        self.driver = None
         
         self.options = Options()
-        self.user_data_dir = os.path.join(os.getcwd(), "chrome_profile")
+
+        # Determine correct base path whether running as script or pyinstaller executable
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        self.user_data_dir = os.path.join(base_dir, "chrome_profile")
         self.options.add_argument(f"user-data-dir={self.user_data_dir}")
+        self.options.add_argument("--remote-allow-origins=*") # Prevent websocket connection errors
         
         self.options.add_experimental_option("prefs", {
             "download.default_directory": self.download_path,
@@ -26,71 +39,105 @@ class WhatsAppBot:
         self.options.add_argument("--start-maximized")
         self.options.add_experimental_option("detach", True)
 
-        self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=self.options)
-        self.wait = WebDriverWait(self.driver, 60)
+        self.wait = None
         self.processed_files = set()
 
+    def log(self, message):
+        if self.log_callback:
+            self.log_callback(message)
+
     def login(self):
+        self.log("Initializing Chrome driver...")
+        try:
+            self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=self.options)
+            self.wait = WebDriverWait(self.driver, 60)
+        except Exception as e:
+            self.log(f"Error starting Chrome: {e}")
+            return False
+
         self.driver.get("https://web.whatsapp.com")
+        self.log("Waiting for WhatsApp Web to load...")
         
         try:
             self.wait.until(EC.presence_of_element_located((By.ID, "side")))
-            print("Login successful (or session restored)!")
+            self.log("Login successful (or session restored)!")
+            return True
         except Exception as e:
-            print("Login timed out. Please scan the QR code if needed.")
+            self.log("Login timed out. Please scan the QR code if needed.")
+            return False
 
     def open_group(self, group_name):
-        print(f"Searching for group: {group_name}")
+        self.log(f"Searching for group: {group_name}")
         try:
-            search_box = self.wait.until(EC.element_to_be_clickable((By.XPATH, '//div[@contenteditable="true"][@data-tab="3"]')))
+            # Try multiple selectors for the search box as WhatsApp updates its web UI frequently
+            search_box = None
+            selectors = [
+                (By.XPATH, '//div[@contenteditable="true"][@data-tab="3"]'),
+                (By.XPATH, '//*[@title="Search input textbox"]'),
+                (By.XPATH, '//div[contains(@class, "lexical-rich-text-input")]/div[@role="textbox"]')
+            ]
+            
+            for by, val in selectors:
+                try:
+                    search_box = WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable((by, val)))
+                    if search_box: break
+                except:
+                    continue
+                    
+            if not search_box:
+                raise Exception("Could not find search box")
+
             search_box.clear()
             search_box.send_keys(group_name)
+            time.sleep(2) # Wait for search results
             search_box.send_keys(Keys.ENTER)
-            time.sleep(30)
-            print(f"Opened group: {group_name}")
+            time.sleep(3) # Wait for chat to open
+            self.log(f"Opened group: '{group_name}'")
+            return True
         except Exception as e:
-            print(f"Failed to open group: {group_name}. It might not exist or took too long.")
-            print(e)
+            self.log(f"Failed to open group: {group_name}. It might not exist or took too long.")
+            self.log(str(e))
+            return False
 
-
-
-    def download_unread_pdfs(self, check_limit=10):
-        
+    def download_unread_pdfs(self):
         try:
-            pdf_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), '.pdf')]")
+            # Find elements containing text or title resembling .pdf
+            pdf_elements = self.driver.find_elements(By.XPATH, "//*[contains(translate(text(), 'PDF', 'pdf'), '.pdf')]")
             
             valid_pdfs = []
             for el in pdf_elements:
                 try:
                     text = el.text.strip()
-                    if text.lower().endswith('.pdf'):
-                        if el.is_displayed():
-                            valid_pdfs.append(el)
+                    if text.lower().endswith('.pdf') and el.is_displayed():
+                        valid_pdfs.append(el)
                 except:
                     pass
             
             if not valid_pdfs:
-                print("No obvious PDF text elements found. Checking titles...")
-                title_elements = self.driver.find_elements(By.XPATH, "//*[contains(@title, '.pdf')]")
-                valid_pdfs.extend(title_elements)
+                # Fallback to title attribute
+                title_elements = self.driver.find_elements(By.XPATH, "//*[contains(translate(@title, 'PDF', 'pdf'), '.pdf')]")
+                valid_pdfs.extend([el for el in title_elements if el.is_displayed()])
 
             if not valid_pdfs:
-                print("No PDF files found in visible area.")
                 return
 
-            print(f"Found {len(valid_pdfs)} potential PDF markers.")
+            self.log(f"Found {len(valid_pdfs)} potential PDF markers in visible area.")
             
             for element in valid_pdfs:
+                if not self.running:
+                    break
                 try:
-                    filename = element.text or element.get_attribute('title') or "unknown.pdf"
+                    filename = element.text or element.get_attribute('title') or ""
+                    if not filename.lower().endswith('.pdf'):
+                        # Guarantee uniqueness for missing names so they don't block subsequent unnamed downloads
+                        filename = f"unknown_{int(time.time()*1000)}.pdf"
                     
                     if filename in self.processed_files:
                         continue
                         
-                    print(f"Attempting to download: {filename}")
+                    self.log(f"Attempting to download: {filename}")
                     
                     parent = element.find_element(By.XPATH, "./..")
-                    
                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
                     time.sleep(1)
                     
@@ -101,26 +148,50 @@ class WhatsAppBot:
                             parent.click()
                         except:
                             self.driver.execute_script("arguments[0].click();", element)
-                            print("Downloaded.")
                             
+                    self.log(f"Clicked download for: {filename}")
                     time.sleep(2)
                     self.processed_files.add(filename)
                     
                 except Exception as e:
-                    print(f"Error handling file {filename}: {e}")
+                    self.log(f"Error handling file {filename}: {e}")
                     
         except Exception as e:
-            print(f"Error scanning for PDFs: {e}")
+            self.log(f"Error scanning for PDFs: {e}")
 
     def run(self, group_name):
-        self.login()
-        self.open_group(group_name)
-        
-        print("Press Ctrl+C to stop.")
+        self.running = True
+        if not self.login():
+            self.running = False
+            return
+            
+        if not self.open_group(group_name):
+            self.running = False
+            return
+            
+        self.log("Started monitoring for PDFs...")
         try:
-            while True:
+            while self.running:
                 self.download_unread_pdfs()
-                time.sleep(10)
-        except KeyboardInterrupt:
-            print("Stopping")
-            self.driver.quit()
+                time.sleep(5)
+        except Exception as e:
+            self.log(f"Bot error: {e}")
+        finally:
+            self.stop()
+
+    def stop(self):
+        if self.running:
+            self.running = False
+            self.log("Stopping bot...")
+        if self.driver:
+            try:
+                self.driver.quit()
+            except:
+                pass
+            self.driver = None
+            self.log("Browser closed.")
+        
+    def start_in_thread(self, group_name):
+        thread = threading.Thread(target=self.run, args=(group_name,), daemon=True)
+        thread.start()
+        return thread
