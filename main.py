@@ -12,15 +12,16 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("WhatsApp PDF Downloader")
-        self.geometry("600x450")
+        self.geometry("650x550")
         self.resizable(False, False)
         
         self.bot = None
         self.bot_thread = None
+        self.download_dir = ""
 
         # configure grid layout 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
         # Title Label
         self.title_label = ctk.CTkLabel(self, text="WhatsApp PDF Downloader", font=ctk.CTkFont(size=24, weight="bold"))
@@ -37,9 +38,24 @@ class App(ctk.CTk):
         self.group_entry = ctk.CTkEntry(self.input_frame, placeholder_text="Enter exactly as it appears in WhatsApp")
         self.group_entry.grid(row=0, column=1, padx=(0, 10), pady=10, sticky="ew")
 
+        # Options Frame
+        self.options_frame = ctk.CTkFrame(self.input_frame, fg_color="transparent")
+        self.options_frame.grid(row=1, column=0, columnspan=2, pady=5, sticky="ew")
+        self.options_frame.grid_columnconfigure(1, weight=1)
+
+        self.dir_button = ctk.CTkButton(self.options_frame, text="Choose Download Folder", command=self.pick_directory)
+        self.dir_button.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        
+        self.dir_label = ctk.CTkLabel(self.options_frame, text="Default (in app folder)", text_color="gray")
+        self.dir_label.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+
+        self.scroll_var = ctk.BooleanVar(value=False)
+        self.scroll_switch = ctk.CTkSwitch(self.options_frame, text="Auto-Scroll for Older PDFs", variable=self.scroll_var)
+        self.scroll_switch.grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+
         # Buttons Frame
         self.button_frame = ctk.CTkFrame(self.input_frame, fg_color="transparent")
-        self.button_frame.grid(row=1, column=0, columnspan=2, pady=(0, 10))
+        self.button_frame.grid(row=2, column=0, columnspan=2, pady=(10, 10))
 
         self.start_button = ctk.CTkButton(self.button_frame, text="Start Bot", command=self.start_bot, fg_color="#2ecc71", hover_color="#27ae60", text_color="white")
         self.start_button.grid(row=0, column=0, padx=10)
@@ -50,6 +66,12 @@ class App(ctk.CTk):
         # Console Text Area
         self.console = ctk.CTkTextbox(self, state="disabled", font=ctk.CTkFont(family="Consolas", size=12))
         self.console.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="nsew")
+
+    def pick_directory(self):
+        folder = ctk.filedialog.askdirectory()
+        if folder:
+            self.download_dir = folder
+            self.dir_label.configure(text=folder)
 
     def log_message(self, message):
         # We must use after() to update GUI safely from the bot's background thread
@@ -70,13 +92,17 @@ class App(ctk.CTk):
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.group_entry.configure(state="disabled")
+        self.dir_button.configure(state="disabled")
+        self.scroll_switch.configure(state="disabled")
         
-        if getattr(sys, 'frozen', False):
-            application_path = os.path.dirname(sys.executable)
+        if self.download_dir:
+            download_folder = self.download_dir
         else:
-            application_path = os.path.dirname(os.path.abspath(__file__))
-            
-        download_folder = os.path.join(application_path, "downloads")
+            if getattr(sys, 'frozen', False):
+                application_path = os.path.dirname(sys.executable)
+            else:
+                application_path = os.path.dirname(os.path.abspath(__file__))
+            download_folder = os.path.join(application_path, "downloads")
         
         if not os.path.exists(download_folder):
             os.makedirs(download_folder)
@@ -85,10 +111,14 @@ class App(ctk.CTk):
         self.console.delete("1.0", "end")
         self.console.configure(state="disabled")
         
+        auto_scroll = self.scroll_var.get()
+        scroll_status = "Enabled" if auto_scroll else "Disabled"
+        
         self.log_message(f"PDFs will be downloaded to:\n{download_folder}\n")
+        self.log_message(f"Auto-scroll is {scroll_status}")
         self.log_message(f"Starting bot for group: {group_name}")
         
-        self.bot = WhatsAppBot(download_folder, log_callback=self.log_message)
+        self.bot = WhatsAppBot(download_folder, log_callback=self.log_message, auto_scroll=auto_scroll)
         self.bot_thread = self.bot.start_in_thread(group_name)
 
         # Start checking if thread is alive
@@ -100,6 +130,8 @@ class App(ctk.CTk):
         self.start_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self.group_entry.configure(state="normal")
+        self.dir_button.configure(state="normal")
+        self.scroll_switch.configure(state="normal")
         self.log_message("User requested stop.")
 
     def check_thread(self):
@@ -109,6 +141,8 @@ class App(ctk.CTk):
             self.start_button.configure(state="normal")
             self.stop_button.configure(state="disabled")
             self.group_entry.configure(state="normal")
+            self.dir_button.configure(state="normal")
+            self.scroll_switch.configure(state="normal")
             self.log_message("Bot process ended.")
         elif self.bot and self.bot.running:
             self.after(1000, self.check_thread)

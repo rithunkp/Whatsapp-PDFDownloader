@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import json
 import threading
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -12,10 +13,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 class WhatsAppBot:
-    def __init__(self, download_path, log_callback=None):
+    def __init__(self, download_path, log_callback=None, auto_scroll=False):
         self.download_path = os.path.abspath(download_path)
         self.log_callback = log_callback if log_callback else print
         self.running = False
+        self.auto_scroll = auto_scroll
         self.driver = None
         
         self.options = Options()
@@ -27,6 +29,7 @@ class WhatsAppBot:
             base_dir = os.path.dirname(os.path.abspath(__file__))
 
         self.user_data_dir = os.path.join(base_dir, "chrome_profile")
+        self.history_file = os.path.join(self.user_data_dir, "history.json")
         self.options.add_argument(f"user-data-dir={self.user_data_dir}")
         self.options.add_argument("--remote-allow-origins=*") # Prevent websocket connection errors
         
@@ -40,7 +43,25 @@ class WhatsAppBot:
         self.options.add_experimental_option("detach", True)
 
         self.wait = None
-        self.processed_files = set()
+        self.processed_files = self._load_history()
+
+    def _load_history(self):
+        if os.path.exists(self.history_file):
+            try:
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    return set(json.load(f))
+            except Exception as e:
+                self.log(f"Warning: Could not read history file. {e}")
+        return set()
+
+    def _save_history(self, filename):
+        self.processed_files.add(filename)
+        try:
+            os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
+            with open(self.history_file, 'w', encoding='utf-8') as f:
+                json.dump(list(self.processed_files), f)
+        except Exception as e:
+            self.log(f"Warning: Could not save history file. {e}")
 
     def log(self, message):
         if self.log_callback:
@@ -151,7 +172,7 @@ class WhatsAppBot:
                             
                     self.log(f"Clicked download for: {filename}")
                     time.sleep(2)
-                    self.processed_files.add(filename)
+                    self._save_history(filename)
                     
                 except Exception as e:
                     self.log(f"Error handling file {filename}: {e}")
@@ -172,6 +193,16 @@ class WhatsAppBot:
         self.log("Started monitoring for PDFs...")
         try:
             while self.running:
+                if self.auto_scroll:
+                    try:
+                        # Find the scrollable message container and send the Page Up key
+                        chat_container = self.driver.find_element(By.XPATH, '//div[@data-testid="conversation-panel-messages"]/parent::div')
+                        if chat_container:
+                            chat_container.send_keys(Keys.PAGE_UP)
+                            time.sleep(1) # wait for DOM settling after scroll
+                    except Exception as e:
+                        pass # if it can't scroll, just ignore and try downloading
+                        
                 self.download_unread_pdfs()
                 time.sleep(5)
         except Exception as e:
